@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- SelectionSet: two squares, different colors – yellow dashed (box selection style) + blue solid -->
+  <rect x="4" y="4" width="16" height="16" fill="none" stroke="#eab308" stroke-width="2" stroke-dasharray="3,2"/>
+  <rect x="12" y="12" width="16" height="16" fill="none" stroke="#2563eb" stroke-width="2"/>
+</svg>

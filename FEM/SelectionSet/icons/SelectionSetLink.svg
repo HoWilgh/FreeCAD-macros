@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 32 32" width="32" height="32">
+  <!-- Fallback when FEM_Analysis.svg is not in this folder -->
+  <path d="M16 6 L8 26 L10 26 L10 20 L22 20 L22 26 L24 26 Z" fill="#e5e7eb" stroke="#9ca3af" stroke-width="0.6"/>
+  <!-- Link to FEM Analysis icon when present in same folder (copy from FreeCAD Mod/Fem/Gui/Resources/icons/ or wiki). -->
+  <image xlink:href="FEM_Analysis.svg" width="32" height="32" x="0" y="0" preserveAspectRatio="xMidYMid meet"/>
+  <!-- Overlay: two SelectionSet rectangles, same size and thickness as in SelectionSet.svg -->
+  <rect x="4" y="4" width="16" height="16" fill="none" stroke="#eab308" stroke-width="2" stroke-dasharray="3,2"/>
+  <rect x="12" y="12" width="16" height="16" fill="none" stroke="#2563eb" stroke-width="2"/>
+</svg>

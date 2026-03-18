@@ -10,6 +10,13 @@ Modules:
   selection_set_core – SelectionSet logic and GUI (Create/Expand/Update, observer, commands).
   selection_set_tests – Test runner and test geometry builders (Run tests button, build_test_*).
 See README.md for usage.
+__Name__="SelectionSet"
+__Version__="1.0.0"
+__title__="FreeCAD macro to create SelectionSets and SelectionSetLinks"
+__author__ = "HoWil"
+__url__ = "https://github.com/HoWilgh/FreeCAD-macros/tree/master/FEM/SelectionSet"
+__Files__=['selection_set_core.py','selection_set_tests.py','icons/SelectionSet.svg','icons/SelectionSetLink.svg']
+
 """
 import FreeCAD
 import importlib
