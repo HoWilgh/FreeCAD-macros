@@ -8,7 +8,7 @@ import os
 _MACRO_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Macro version: used when loading (printed in Report view) and in test runner to confirm the loaded code version.
-__version__ = "1.0.0"
+__version__ = "1.0.1"
 
 
 def _macro_icons_dir():
