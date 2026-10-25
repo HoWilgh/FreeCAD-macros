@@ -1,9 +1,12 @@
 """
 selection_set_tests: Test runner and test geometry builders for SelectionSet.
 
-FreeCAD version compatibility (1.0 and 1.1):
+FreeCAD version compatibility (1.0, 1.1, and 26.3+):
 - Test geometry (e.g. PartDesign Pad) may use properties that are deprecated in 1.1.
   We keep 1.0 behaviour and adopt 1.1 APIs where needed (see comments at Pad Midplane/SideType).
+- FreeCAD 26.3 renamed the electrostatic potential boundary condition to the
+  electromagnetic boundary condition. Both APIs are tested as one logical FEM
+  boundary-condition check.
 """
 import FreeCAD
 import FreeCADGui
@@ -140,7 +143,8 @@ def build_all_test_geometry():
 def _run_fem_test(log):
     """
     Run Test FEM: create FEM analysis; ConstraintFixed from Test1+Test9a faces;
-    ConstraintElectrostaticPotential from Test6 faces (all 6), using one-by-one ref workaround.
+    electrostatic/electromagnetic potential boundary condition from Test6 faces
+    (all 6), using one-by-one ref workaround.
     Returns (add_tests, add_passed, add_failed, fail_name).
     Skips if FEM types are not available (e.g. FEM workbench not loaded).
     """
@@ -208,7 +212,7 @@ def _run_fem_test(log):
     if len(actual_fixed) != len(refs_fixed):
         log("Test FEM: WARNING (ConstraintFixed has %d refs, expected %d; continuing to create electrostatic + link)." % (len(actual_fixed), len(refs_fixed)))
 
-    # Electrostatic potential constraint with all Test6 faces (6 faces).
+    # Electrostatic/electromagnetic potential constraint with all Test6 faces (6 faces).
     # Some FEM constraints only accept references when added one-by-one; use workaround (see selection_set_core.apply_references_to_fem_constraint_one_by_one).
     ss6 = doc.getObject("Test6_Faces_TestCube_Selection_Bool_6faces_fully_inside")
     if not ss6 or not getattr(ss6, "ElementList", None):
@@ -219,19 +223,12 @@ def _run_fem_test(log):
         log("Test FEM: FAIL (Test6 should have 6 faces, got %d)." % len(refs_electro))
         return (1, 0, 1, "Test FEM")
 
-    # Use ObjectsFem like the GUI (FEM_CompEmConstraints); fall back to addObject if not available
-    constraint_electro = None
-    try:
-        import ObjectsFem
-        constraint_electro = ObjectsFem.makeConstraintElectrostaticPotential(doc, "FEM_Test_ConstraintElectrostaticPotential")
-    except Exception as e:
-        log("Test FEM: ObjectsFem.makeConstraintElectrostaticPotential not available (%s), trying addObject." % e)
+    # FreeCAD 26.3 renamed this API to ConstraintElectromagnetic. Select the
+    # matching factory/type while keeping this one logical FEM test unchanged.
+    constraint_electro, constraint_api = _make_electrostatic_boundary_condition(doc, log)
     if constraint_electro is None:
-        try:
-            constraint_electro = doc.addObject("Fem::ConstraintElectrostaticPotential", "FEM_Test_ConstraintElectrostaticPotential")
-        except Exception as e:
-            log("Test FEM: FAIL (Fem::ConstraintElectrostaticPotential failed: %s)." % e)
-            return (1, 0, 1, "Test FEM")
+        return (1, 0, 1, "Test FEM")
+    log("Test FEM: using %s." % constraint_api)
     analysis.addObject(constraint_electro)
 
     # Set potential (0 V) if property exists
@@ -251,10 +248,10 @@ def _run_fem_test(log):
 
     actual_electro = list(getattr(constraint_electro, "References", []) or [])
     if len(actual_electro) == 0:
-        log("Test FEM: FAIL (ConstraintElectrostaticPotential has no refs).")
+        log("Test FEM: FAIL (%s has no refs)." % constraint_api)
         return (1, 0, 1, "Test FEM")
     if len(actual_electro) != 6:
-        log("Test FEM: WARNING (ConstraintElectrostaticPotential has %d refs, expected 6; continuing to link)." % len(actual_electro))
+        log("Test FEM: WARNING (%s has %d refs, expected 6; continuing to link)." % (constraint_api, len(actual_electro)))
 
     # SelectionSetLink: create link that adds Test1+Test9a and targets ConstraintFixed; apply and verify
     link = createSelectionSetLink("FEM_Test_SelectionSetLink")
@@ -276,7 +273,7 @@ def _run_fem_test(log):
         log("Test FEM: WARNING (SelectionSetLink applied; ConstraintFixed has %d refs, expected %d)." % (len(refs_via_link), len(refs_fixed)))
     doc.recompute()
 
-    # Second SelectionSetLink: target ConstraintElectrostaticPotential, add Test6 faces
+    # Second SelectionSetLink: target the potential boundary condition, add Test6 faces
     link_electro = createSelectionSetLink("FEM_Test_SelectionSetLink_Electro")
     if link_electro:
         link_electro.TargetObjects = [constraint_electro]
@@ -326,7 +323,7 @@ def _run_fem_test(log):
         log("Test FEM: WARNING (FEM material object not created).")
 
     doc.recompute()
-    log("Test FEM: PASS (FEM analysis + ConstraintFixed + ConstraintElectrostaticPotential + 3 SelectionSetLinks + FEM material created and verified).")
+    log("Test FEM: PASS (FEM analysis + ConstraintFixed + %s + 3 SelectionSetLinks + FEM material created and verified)." % constraint_api)
     return (1, 1, 0, None)
 
 
@@ -374,6 +371,51 @@ def _is_fc102():
 def _is_fc11():
     """True if running on FreeCAD 1.1 or newer. Use for mesh (run()) and cut (Part::Cut/BOP)."""
     return _freecad_version_tuple() >= (1, 1)
+
+
+def _is_fc263_or_newer():
+    """Return whether FreeCAD uses the renamed electromagnetic FEM boundary condition."""
+    return _freecad_version_tuple() >= (26, 3)
+
+
+def _make_electrostatic_boundary_condition(doc, log):
+    """Create the version-appropriate electrostatic/electromagnetic FEM boundary condition.
+
+    Args:
+        doc: FreeCAD document in which to create the condition.
+        log: Callable that accepts one diagnostic message.
+
+    Returns:
+        A tuple containing the created object and the API/type description used,
+        or ``(None, description)`` when creation fails.
+    """
+    if _is_fc263_or_newer():
+        factory_name = "makeConstraintElectromagnetic"
+        type_name = "Fem::ConstraintElectromagnetic"
+        object_name = "FEM_Test_ConstraintElectromagnetic"
+        logical_name = "electromagnetic boundary condition"
+    else:
+        factory_name = "makeConstraintElectrostaticPotential"
+        type_name = "Fem::ConstraintElectrostaticPotential"
+        object_name = "FEM_Test_ConstraintElectrostaticPotential"
+        logical_name = "electrostatic potential boundary condition"
+
+    constraint = None
+    try:
+        import ObjectsFem
+        factory = getattr(ObjectsFem, factory_name)
+        constraint = factory(doc, object_name)
+    except (AttributeError, TypeError, RuntimeError) as error:
+        log("Test FEM: ObjectsFem.%s unavailable (%s), trying %s." % (factory_name, error, type_name))
+
+    if constraint is None:
+        try:
+            constraint = doc.addObject(type_name, object_name)
+        except (AttributeError, TypeError, RuntimeError) as error:
+            log("Test FEM: FAIL (%s creation failed: %s)." % (type_name, error))
+            return None, "%s (%s)" % (logical_name, type_name)
+
+    return constraint, "%s (%s)" % (logical_name, type_name)
 
 
 def _run_gmsh_for_mesh_fc102(mesh, dbg=None):
@@ -1764,7 +1806,14 @@ On FreeCAD 1.0.2, GMSH mesh with hole may fail; run mesh/solver manually and exp
     # Save document with the given name (macro folder)
     try:
         import os
-        base = os.path.dirname(os.path.abspath(__file__))
+        base = os.path.abspath(
+            os.environ.get(
+                "SELECTIONSET_OUTPUT_DIR",
+                os.path.dirname(os.path.abspath(__file__)),
+            )
+        )
+        if not os.path.isdir(base):
+            os.makedirs(base)
         save_path = os.path.join(base, "FEM_CantileverBeam_with_SelectionSetLinks.FCStd")
         doc.saveAs(save_path)
         log("FEM cantilever beam example: saved as %s" % save_path)
@@ -2347,7 +2396,14 @@ def run_selectionset_tests():
 
     # Add summary to _log_lines only (do not log to report here). Caller appends summary to report last so it stays at the very end (after any FEM/debug output).
     import os
-    _results_dir = os.path.dirname(os.path.abspath(__file__))
+    _results_dir = os.path.abspath(
+        os.environ.get(
+            "SELECTIONSET_OUTPUT_DIR",
+            os.path.dirname(os.path.abspath(__file__)),
+        )
+    )
+    if not os.path.isdir(_results_dir):
+        os.makedirs(_results_dir)
     _results_path = os.path.join(_results_dir, "selection_set_test_results.txt")
     _log_lines.append(
         f"\n\n######\n[SelectionSet Test Runner] Tests complete. {n_passed} passed, {n_failed} failed out of {n_tests} total tests."

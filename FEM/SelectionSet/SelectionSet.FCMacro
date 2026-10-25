@@ -18,6 +18,7 @@ __url__ = "https://github.com/HoWilgh/FreeCAD-macros/tree/master/FEM/SelectionSe
 __Files__=['selection_set_core.py','selection_set_tests.py','icons/SelectionSet.svg','icons/SelectionSetLink.svg']
 
 """
+
 import FreeCAD
 import importlib
 import os
@@ -30,6 +31,7 @@ if _macro_dir not in sys.path:
 
 import selection_set_core
 import selection_set_tests
+
 # Reload so re-running the macro always uses the latest code from disk
 importlib.reload(selection_set_core)
 importlib.reload(selection_set_tests)
@@ -51,7 +53,13 @@ selection_set_tests.add_tests_pulldown_to_toolbar()
 
 if selection_set_core.USE_SELECTION_OBSERVER:
     selection_set_core._attach_selectionset_observer()
-    print("SelectionSet macro loaded: Observer enabled (single-click expands). Buttons on 'Selection_tools' toolbar.")
+    print(
+        "SelectionSet macro loaded: Observer enabled (single-click expands). Buttons on 'Selection_tools' toolbar."
+    )
 else:
-    print("SelectionSet macro loaded: Select a SelectionSet in the tree, then click 'Expand SelectionSet' on the toolbar; or double-click/right-click the SelectionSet in the tree.")
-print("Next steps: Use the 'Tests' pulldown (Run Test 1, Build test geometry, Run Test 3, Run all tests, FEM beam example).")
+    print(
+        "SelectionSet macro loaded: Select a SelectionSet in the tree, then click 'Expand SelectionSet' on the toolbar; or double-click/right-click the SelectionSet in the tree."
+    )
+print(
+    "Next steps: Use the 'Tests' pulldown (Run Test 1, Build test geometry, Run Test 3, Run all tests, FEM beam example)."
+)

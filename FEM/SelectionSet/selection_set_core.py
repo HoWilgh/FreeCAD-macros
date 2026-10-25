@@ -55,13 +55,15 @@ def _freecad_version_tuple():
     Example: (1, 0) or (1, 1). Used to adopt 1.1 APIs while keeping 1.0 behaviour.
     """
     try:
-        v = getattr(FreeCAD, "Version", None) or ()
+        v = getattr(FreeCAD, "Version", None)
+        if callable(v):
+            v = v()
         if isinstance(v, (list, tuple)) and len(v) >= 2:
             return (int(v[0]), int(v[1]))
         if isinstance(v, str):
             parts = v.split(".")[:2]
             return (int(parts[0]), int(parts[1])) if len(parts) >= 2 else (1, 0)
-    except Exception:
+    except (AttributeError, TypeError, ValueError):
         pass
     return (1, 0)
 
