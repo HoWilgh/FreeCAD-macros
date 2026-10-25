@@ -1,5 +1,7 @@
 # FreeCAD macro: SelectionSet
 
+This macro **reduces repetitive picking** by creating reusable selections of faces or solids **using spatial regions or coordinates** instead of selecting each element manually. When a model changes—for example, through added holes, resizing, or repositioned components—spatial selection criteria help identify the intended geometry again, reducing cumbersome reselection. In FEM, these **selections can be reused** for boundary conditions and different analyses; beyond FEM, they simplify workflows that repeatedly target particular geometric regions. This makes evolving models easier to maintain and complements topological-naming mitigation rather than replacing it.
+
 Volume-based selection of faces or solids in FreeCAD. **SelectionSet:** define a “selection shape” (e.g. a box, sphere, or PartDesign body), then store which faces or solids of another object lie inside or intersect it as a **SelectionSet** in the model tree. **SelectionSetLink:** combine one or more SelectionSets (and/or direct shapes), add and subtract as needed, then apply the result to a FEM constraint, material, or any object with a References property—so you drive FEM geometry from your selections in one place.
 
 ---
