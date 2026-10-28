@@ -67,9 +67,33 @@ Use face-based SelectionSets for FEM constraints and material geometry. FEM
 material geometry normally requires **Face, Edge** references rather than a
 solid reference. A target is updated only by **Renew elements**.
 
+A SelectionSet can also select **edges** (Mode `edges`): in coordinates mode
+all edges containing **CoordinatePoint** are selected. This is used for the
+force **Direction** edge of `ConstraintForce`, which is a separate reference
+property and also breaks on topology changes. A link with
+**TargetProperty = `Direction`** applies the first edge of its combined refs
+to the target's `Direction` property; the default `References` behaviour is
+unchanged.
+
 The FEM beam example, when available in the toolbar, creates a beam, FEM
 objects, SelectionSets, and SelectionSetLinks. Its variables include
 `Suppressed` and `CylinderRadius`; the default cylinder radius is 300 mm.
+
+The **Tests** pulldown also contains **FEM beam example (PartDesign body)**:
+the same cantilever built as a PartDesign Body (sketch + pad), with the mesh
+geometry on the Body and a suppressed fillet on the long top edge. The
+constraints start with direct face references (`Face2`/`Face4`) plus
+SelectionSetLinks, including an edges SelectionSet for the force
+**Direction** edge (`PD_Beam_ForceDirection`) and its link
+(`FEM_PDBeam_Link_ForceDirection`, TargetProperty `Direction`). Unsuspend
+the fillet (`Fillet.Suppressed = False`) and recompute to change the face
+numbering: the direct force reference breaks (invalidated as `?Face2` on
+FreeCAD 1.1), and **Update all sets and links** restores the intended
+references. `PD beam variables` exposes the fillet
+radius. The standalone development pair in `src/tools/`
+(`ccx_cantilever_faceload_partdesign.py` and
+`ccx_cantilever_faceload_partdesign_selectionset.py`) shows the same
+comparison without the macro toolbar; see the repository README.
 
 ## Python API
 
@@ -103,6 +127,12 @@ the FreeCAD FEM workbench. It was tested with FreeCAD 1.0.2, 1.1 RC3,
 FreeCAD 1.0.2 can fail to generate the GMSH cantilever mesh with a hole.
 This is a compatibility limitation of that build; the other tested builds
 complete the full test suite.
+
+The **FEM beam example (PartDesign body)** is verified on FreeCAD 1.1.4 and
+26.3 RC2. On FreeCAD 1.0.2 it is not yet verified: the fillet property names
+and the stale-reference behaviour without topological-naming mitigation
+(a broken reference may silently resolve to another face instead of being
+invalidated) still need checking there.
 
 Generated test tools, AppImages, result files, development plans, and release
 metadata are maintained in the development workspace and are not required to

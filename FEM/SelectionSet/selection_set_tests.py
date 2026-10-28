@@ -35,8 +35,9 @@ from selection_set_core import (
     USE_SELECTION_OBSERVER,
 )
 
-# Minimum macro version expected for the full test suite (FEM cantilever, multi-target links, etc.).
-REQUIRED_MACRO_VERSION = "1.0.1"
+# Minimum macro version expected for the full test suite (FEM cantilever, PartDesign beam
+# example with edges mode and Direction links, multi-target links, etc.).
+REQUIRED_MACRO_VERSION = "1.1.0"
 
 # Set to True to write fem_cantilever_debug.log and gmsh_mesh_debug.log and to emit [FEM-cut] / [GMSH-mesh] lines to report/console during FEM cantilever test. False = no debug files, quiet run.
 WRITE_FEM_DEBUG_FILES = False
@@ -1828,6 +1829,549 @@ On FreeCAD 1.0.2, GMSH mesh with hole may fail; run mesh/solver manually and exp
     log("FEM cantilever beam example: done. Beam + fixed/force SelectionSets and SelectionSetLinks created." + (" (with cylinder cut)" if cylinder_cut else ""))
 
 
+def run_fem_partdesign_beam_example(fillet=False, geometry_offset=None):
+    """
+    FEM cantilever beam example built with a PartDesign Body (sketch + pad + fillet feature).
+    The mesh geometry is the BODY, so further PartDesign features can be introduced later
+    (additive/subtractive features, fillets, ...).
+
+    A PartDesign::Fillet on the LONG top edge (full beam length, y=0 side) is created and
+    suppressed by default (fillet=True starts with the fillet active). Enabling it changes
+    the face numbering of the body (verified on FreeCAD 1.1.4):
+      - plain pad:   force face (x=l) = Face2, fixed face (x=0) = Face4
+      - with fillet: force face (x=l) = Face5, and Face2 names the FIXED end
+    Direct face references therefore break silently (the force would act on the fixed end),
+    while the SelectionSets (MainObject = Body, coordinates mode) plus SelectionSetLinks
+    restore the intended references via 'Update all sets and links'.
+
+    The constraints start with DIRECT face references (the conventional FEM workflow) and
+    additionally get SelectionSetLinks so the difference is visible in the Data tab.
+
+    geometry_offset: optional FreeCAD.Vector to place the beam away from the origin
+    (e.g. when running together with other test geometry to avoid overlap).
+    """
+    report = FreeCADGui.getMainWindow().findChild(QtWidgets.QTextEdit, "Report view") if FreeCADGui.getMainWindow() else None
+
+    def log(msg):
+        if report:
+            report.append(msg)
+        else:
+            print(msg)
+
+    try:
+        import Fem  # noqa: F401
+    except Exception as e:
+        log("FEM PartDesign beam example: SKIP (Fem module not available: %s)." % e)
+        return
+
+    doc = FreeCAD.ActiveDocument
+    if doc is None:
+        doc = FreeCAD.newDocument()
+    doc.Label = "FEM_PD_CantileverBeam"
+
+    offset = geometry_offset if geometry_offset is not None else FreeCAD.Vector(0, 0, 0)
+    length_mm = 8000.0
+    w, h = 1000.0, 1000.0
+
+    # --- PartDesign Body: sketch (rectangle 8000 x 1000 on XY) + pad (1000 in Z) ---
+    body = doc.getObject("PD_Beam")
+    if not body:
+        body = doc.addObject("PartDesign::Body", "PD_Beam")
+    body.Label = "PD beam (cantilever)"
+    doc.recompute()
+    sk = doc.getObject("PD_Beam_Sketch")
+    if not sk:
+        xy_plane = None
+        for o in doc.Objects:
+            if "XY_Plane" in (getattr(o, "Name", "") or "") and body in getattr(o, "InListRecursive", []):
+                xy_plane = o
+                break
+        sk = body.newObject("Sketcher::SketchObject", "PD_Beam_Sketch")
+        if xy_plane:
+            try:
+                sk.AttachmentSupport = [(xy_plane, [""])]
+            except Exception:
+                try:
+                    sk.Support = [(xy_plane, [""])]
+                except Exception:
+                    pass
+            try:
+                sk.MapMode = "FlatFace"
+            except Exception:
+                pass
+        # Plain rectangle (no sketch constraints needed for the example geometry)
+        pts = [FreeCAD.Vector(0, 0, 0), FreeCAD.Vector(length_mm, 0, 0), FreeCAD.Vector(length_mm, w, 0), FreeCAD.Vector(0, w, 0)]
+        for i in range(4):
+            sk.addGeometry(Part.LineSegment(pts[i], pts[(i + 1) % 4]), False)
+        doc.recompute()
+    pad = doc.getObject("PD_Beam_Pad")
+    if not pad:
+        pad = body.newObject("PartDesign::Pad", "PD_Beam_Pad")
+        pad.Profile = (sk, [""])
+        pad.Length = h
+        doc.recompute()
+    try:
+        body.Placement.Base = offset
+    except Exception:
+        pass
+    doc.recompute()
+    log("FEM PartDesign beam example: Body '%s' with sketch '%s' and pad '%s' (8000 x 1000 x 1000 mm)."
+        % (body.Name, sk.Name, pad.Name))
+
+    # --- Fillet feature on the LONG top edge (full length, min y, max z of the pad shape) ---
+    fillet_obj = doc.getObject("PD_Beam_Fillet")
+    if not fillet_obj:
+        edge_name = None
+        long_x_edges = []
+        for i, e in enumerate(pad.Shape.Edges, start=1):
+            vs = e.Vertexes
+            if len(vs) < 2:
+                continue
+            p0, p1 = vs[0].Point, vs[-1].Point
+            d = p1.sub(p0)
+            if abs(abs(d.x) - length_mm) < 1e-3 and abs(d.y) < 1e-6 and abs(d.z) < 1e-6:
+                long_x_edges.append((i, p0.y, p0.z, p1.y, p1.z))
+        if long_x_edges:
+            # long edge on the y=0 side at the top (max z among the y-min edges)
+            y_min = min(min(e[1], e[3]) for e in long_x_edges)
+            top = [e for e in long_x_edges if abs(min(e[1], e[3]) - y_min) < 1e-6]
+            z_max = max(max(e[2], e[4]) for e in top)
+            for e in top:
+                if abs(max(e[2], e[4]) - z_max) < 1e-6:
+                    edge_name = "Edge%d" % e[0]
+                    break
+        if edge_name:
+            fillet_obj = body.newObject("PartDesign::Fillet", "PD_Beam_Fillet")
+            try:
+                fillet_obj.Base = (pad, [edge_name])
+            except Exception as e:
+                log("FEM PartDesign beam example: could not set fillet edge (%s)." % e)
+                try:
+                    doc.removeObject(fillet_obj.Name)
+                except Exception:
+                    pass
+                fillet_obj = None
+            if fillet_obj:
+                fillet_obj.Label = "PD beam fillet (long top edge)"
+                for rad_prop in ("Radius", "FilletRadius"):
+                    if hasattr(fillet_obj, rad_prop):
+                        try:
+                            setattr(fillet_obj, rad_prop, 100.0)
+                        except Exception:
+                            pass
+                        break
+                doc.recompute()
+        else:
+            log("FEM PartDesign beam example: long top edge not found; fillet feature not created.")
+    if fillet_obj:
+        if hasattr(fillet_obj, "Suppressed"):
+            try:
+                fillet_obj.Suppressed = not fillet
+            except Exception:
+                pass
+        doc.recompute()
+        log("FEM PartDesign beam example: fillet feature '%s' created (%s). Toggle its 'Suppressed' "
+            "property in the Data tab to introduce/remove the fillet."
+            % (fillet_obj.Name, "active" if not getattr(fillet_obj, "Suppressed", True) else "suppressed"))
+
+    beam = body  # mesh geometry and SelectionSet MainObject are the BODY (follows the tip feature)
+
+    # --- SelectionSets (coordinates mode) for fixed face, force face, and beam solid ---
+    def make_pd_selectionset(name, point, mode, label_suffix):
+        existing = doc.getObject(name)
+        if existing:
+            doc.removeObject(existing.Name)
+        obj = doc.addObject("App::FeaturePython", name)
+        SelectionSet(obj)
+        obj.Label = "SelectionSet " + label_suffix
+        obj.MainObject = beam
+        obj.Mode = mode
+        obj.VolumeMode = "coordinates"
+        obj.CoordinatePoint = point
+        recomputeSelectionSetFromShapes(obj)
+        apply_selectionset_view_defaults(obj)
+        return obj
+
+    fixed_pt = FreeCAD.Vector(offset.x, offset.y + 0.5 * w, offset.z + 0.5 * h)
+    force_pt = FreeCAD.Vector(offset.x + length_mm, offset.y + 0.5 * w, offset.z + 0.5 * h)
+    solid_pt = FreeCAD.Vector(offset.x + 1000.0, offset.y + 0.5 * w, offset.z + 0.5 * h)
+    # Point on the vertical edge at the free end on the y=w side (direction edge of the force)
+    direction_pt = FreeCAD.Vector(offset.x + length_mm, offset.y + w, offset.z + 0.5 * h)
+    ss_fixed = make_pd_selectionset("PD_Beam_FixedFace", fixed_pt, "faces", "PD beam fixed face (x=0)")
+    ss_force = make_pd_selectionset("PD_Beam_ForceFace", force_pt, "faces", "PD beam force face (x=l)")
+    ss_solid = make_pd_selectionset("PD_Beam_Solid", solid_pt, "solids", "PD beam solid")
+    ss_direction = make_pd_selectionset("PD_Beam_ForceDirection", direction_pt, "edges", "PD beam force direction edge (vertical)")
+    doc.recompute()
+
+    # --- FEM analysis, solver, mesh (mesh geometry = BODY), material ---
+    analysis = doc.getObject("FEM_PDBeam_Analysis")
+    if not analysis:
+        analysis = doc.addObject("Fem::FemAnalysis", "FEM_PDBeam_Analysis")
+    solver = doc.getObject("FEM_PDBeam_Solver")
+    if not solver:
+        try:
+            import ObjectsFem
+            _mk = getattr(ObjectsFem, "makeSolverCalculixCxxtools", None) or getattr(ObjectsFem, "makeSolverCalculiXCcxTools", None)
+            solver = _mk(doc, "FEM_PDBeam_Solver") if callable(_mk) else None
+        except Exception:
+            solver = None
+        if not solver:
+            try:
+                solver = doc.addObject("Fem::SolverCcxTools", "FEM_PDBeam_Solver")
+            except Exception as e:
+                log("FEM PartDesign beam example: solver not created (%s)." % e)
+                solver = None
+        if solver:
+            analysis.addObject(solver)
+    mesh = doc.getObject("FEM_PDBeam_Mesh")
+    if not mesh:
+        try:
+            mesh = doc.addObject("Fem::FemMeshGmsh", "FEM_PDBeam_Mesh")
+        except Exception:
+            try:
+                import ObjectsFem
+                _mk = getattr(ObjectsFem, "makeMeshGmsh", None)
+                mesh = _mk(doc, "FEM_PDBeam_Mesh") if callable(_mk) else None
+            except Exception:
+                mesh = None
+    if mesh:
+        # Mesh geometry is the BODY: the mesh follows the body tip (pad or fillet)
+        for prop in ("Shape", "Part", "Geometry"):
+            if hasattr(mesh, prop):
+                try:
+                    setattr(mesh, prop, beam)
+                except Exception:
+                    pass
+        if hasattr(mesh, "CharacteristicLengthMax"):
+            mesh.CharacteristicLengthMax = 200.0
+        if hasattr(mesh, "ElementOrder"):
+            mesh.ElementOrder = "2nd"
+        if hasattr(mesh, "SecondOrderLinear"):
+            mesh.SecondOrderLinear = False
+        analysis.addObject(mesh)
+        mesh_generated = _run_gmsh_for_mesh(mesh)
+        if mesh_generated:
+            doc.recompute()
+            log("FEM PartDesign beam example: GMSH mesh generated (2nd order, geometry = Body).")
+        else:
+            log("FEM PartDesign beam example: GMSH mesh in analysis. Run GMSH from the mesh object to generate.")
+    material_obj = doc.getObject("FEM_PDBeam_Material")
+    if not material_obj:
+        try:
+            import ObjectsFem
+            material_obj = ObjectsFem.makeMaterialSolid(doc, "FEM_PDBeam_Material")
+        except Exception:
+            try:
+                material_obj = doc.addObject("Fem::Material", "FEM_PDBeam_Material")
+            except Exception:
+                material_obj = None
+    if material_obj:
+        analysis.addObject(material_obj)
+        mat = getattr(material_obj, "Material", None) or {}
+        if isinstance(mat, dict):
+            mat["Name"] = "CalculiX-Steel"
+            mat["YoungsModulus"] = "210000 MPa"
+            mat["PoissonRatio"] = "0.30"
+            material_obj.Material = mat
+        from selection_set_core import _apply_link_to_target
+        link_material = doc.getObject("FEM_PDBeam_Link_Material")
+        if not link_material:
+            link_material = createSelectionSetLink(
+                name="FEM_PDBeam_Link_Material",
+                _target=material_obj,
+                _add_sets=[ss_solid],
+                _add_shapes=[],
+                _targets=[material_obj],
+            )
+        if link_material:
+            n = len(getattr(ss_solid, "ElementList", []) or [])
+            unit = "solid" if n == 1 else "solids"
+            link_material.Label = "SelectionSetLink PD beam (%d %s) Material" % (n, unit)
+            link_material.TargetObjects = [material_obj]
+            link_material.AddSelectionSets = [ss_solid]
+            link_material.AddShapes = []
+            link_material.SubtractSelectionSets = []
+            link_material.SubtractShapes = []
+            link_material.ShapeRefMode = "solids"
+            link_material.UseOneByOneWorkaround = True
+            _apply_link_to_target(link_material)
+        log("FEM PartDesign beam example: Material in analysis, refs from SelectionSet PD_Beam_Solid via link.")
+
+    # --- Constraints: direct references first (conventional workflow), then SelectionSetLinks ---
+    try:
+        constraint_fixed = doc.getObject("FEM_PDBeam_ConstraintFixed")
+        if not constraint_fixed:
+            constraint_fixed = doc.addObject("Fem::ConstraintFixed", "FEM_PDBeam_ConstraintFixed")
+            analysis.addObject(constraint_fixed)
+        constraint_force = doc.getObject("FEM_PDBeam_ConstraintForce")
+        if not constraint_force:
+            constraint_force = doc.addObject("Fem::ConstraintForce", "FEM_PDBeam_ConstraintForce")
+            analysis.addObject(constraint_force)
+    except Exception as e:
+        log("FEM PartDesign beam example: SKIP (FEM constraints not available: %s)." % e)
+        return
+
+    # Direct face references (as a normal FEM workflow would create them): end faces are the
+    # only faces with CenterOfMass.x at 0 or at the beam length, so they are found geometrically.
+    def _end_face_name(x_expected):
+        for i, f in enumerate(beam.Shape.Faces, start=1):
+            if abs(f.CenterOfMass.x - x_expected) < 1e-6:
+                return "Face%d" % i
+        return None
+
+    fixed_face_name = _end_face_name(fixed_pt.x)
+    force_face_name = _end_face_name(force_pt.x)
+    if fixed_face_name and constraint_fixed:
+        constraint_fixed.References = [(beam, fixed_face_name)]
+    if hasattr(constraint_force, "Force"):
+        try:
+            constraint_force.Force = "9000000.0 N"
+        except Exception:
+            try:
+                constraint_force.Force = 9000000.0
+            except Exception:
+                pass
+    # Direction: vertical edge at the free end (same geometric search as the FEM beam example)
+    try:
+        if hasattr(constraint_force, "Direction"):
+            shape = beam.Shape if hasattr(beam, "Shape") else None
+            direction_set = False
+            if shape:
+                for i in range(1, len(shape.Edges) + 1):
+                    try:
+                        edge = shape.getElement("Edge%d" % i)
+                        if edge and len(edge.Vertexes) >= 2:
+                            d = edge.Vertexes[1].Point.sub(edge.Vertexes[0].Point)
+                            if d.Length > 1e-6:
+                                d.normalize()
+                                if abs(d.z) > 0.99:
+                                    constraint_force.Direction = (beam, "Edge%d" % i)
+                                    direction_set = True
+                                    break
+                    except Exception:
+                        continue
+            if hasattr(constraint_force, "Reversed"):
+                constraint_force.Reversed = True
+    except Exception:
+        pass
+    if force_face_name and constraint_force:
+        constraint_force.References = [(beam, force_face_name)]
+    log("FEM PartDesign beam example: direct references set (conventional workflow): "
+        "fixed -> %s, force -> %s (face names of the CURRENT body shape)."
+        % (fixed_face_name, force_face_name))
+
+    # SelectionSetLinks: re-apply the intended references from the SelectionSets
+    from selection_set_core import _apply_link_to_target, get_fem_references_from_selectionsets, apply_references_to_fem_constraint_one_by_one
+    beam_shape_objects = (beam,)
+    link_fixed = doc.getObject("FEM_PDBeam_Link_Fixed")
+    if not link_fixed:
+        link_fixed = createSelectionSetLink(
+            name="FEM_PDBeam_Link_Fixed",
+            _target=constraint_fixed,
+            _add_sets=[ss_fixed],
+            _add_shapes=[],
+            _targets=[constraint_fixed],
+        )
+    if link_fixed and constraint_fixed:
+        n = len(getattr(ss_fixed, "ElementList", []) or [])
+        unit = "face" if n == 1 else "faces"
+        link_fixed.Label = "SelectionSetLink PD beam (%d %s) Fixed" % (n, unit)
+        link_fixed.TargetObjects = [constraint_fixed]
+        link_fixed.AddSelectionSets = [ss_fixed]
+        link_fixed.AddShapes = []
+        link_fixed.SubtractSelectionSets = []
+        link_fixed.SubtractShapes = []
+        link_fixed.UseOneByOneWorkaround = True
+        refs_raw = get_fem_references_from_selectionsets([ss_fixed])
+        refs_beam_only = [r for r in refs_raw if r[0] in beam_shape_objects]
+        if refs_beam_only:
+            apply_references_to_fem_constraint_one_by_one(refs_beam_only, constraint_fixed, doc)
+        else:
+            _apply_link_to_target(link_fixed)
+    link_force = doc.getObject("FEM_PDBeam_Link_Force")
+    if not link_force:
+        link_force = createSelectionSetLink(
+            name="FEM_PDBeam_Link_Force",
+            _target=constraint_force,
+            _add_sets=[ss_force],
+            _add_shapes=[],
+            _targets=[constraint_force],
+        )
+    if link_force and constraint_force:
+        n = len(getattr(ss_force, "ElementList", []) or [])
+        unit = "face" if n == 1 else "faces"
+        link_force.Label = "SelectionSetLink PD beam (%d %s) Force" % (n, unit)
+        link_force.TargetObjects = [constraint_force]
+        link_force.AddSelectionSets = [ss_force]
+        link_force.AddShapes = []
+        link_force.SubtractSelectionSets = []
+        link_force.SubtractShapes = []
+        link_force.UseOneByOneWorkaround = True
+        refs_raw = get_fem_references_from_selectionsets([ss_force])
+        refs_beam_only = [r for r in refs_raw if r[0] in beam_shape_objects]
+        if refs_beam_only:
+            apply_references_to_fem_constraint_one_by_one(refs_beam_only, constraint_force, doc)
+        else:
+            _apply_link_to_target(link_force)
+    # Direction edge of the force (e.g. vertical edge at the free end) via an edges
+    # SelectionSet and a link with TargetProperty = 'Direction', so the direction
+    # survives topology changes as well (Direction is a separate reference property).
+    link_direction = doc.getObject("FEM_PDBeam_Link_ForceDirection")
+    if not link_direction:
+        link_direction = createSelectionSetLink(
+            name="FEM_PDBeam_Link_ForceDirection",
+            _target=constraint_force,
+            _add_sets=[ss_direction],
+            _add_shapes=[],
+            _targets=[constraint_force],
+        )
+    if link_direction and constraint_force:
+        n = len(getattr(ss_direction, "ElementList", []) or [])
+        unit = "edge" if n == 1 else "edges"
+        link_direction.Label = "SelectionSetLink PD beam (%d %s) Force direction" % (n, unit)
+        link_direction.TargetObjects = [constraint_force]
+        link_direction.AddSelectionSets = [ss_direction]
+        link_direction.AddShapes = []
+        link_direction.SubtractSelectionSets = []
+        link_direction.SubtractShapes = []
+        link_direction.TargetProperty = "Direction"
+        link_direction.UseOneByOneWorkaround = True
+        _apply_link_to_target(link_direction)
+    log("FEM PartDesign beam example: SelectionSetLinks created for material, fixed, force, and "
+        "force direction. After enabling/disabling the fillet, use 'Update all sets and links' "
+        "to re-apply the intended references before solving.")
+
+    # --- Variables object: FilletRadius drives the fillet radius ---
+    var_obj = None
+    var_name = None
+    try:
+        fc_ver = _freecad_version_tuple()
+        if fc_ver >= (1, 1):
+            try:
+                var_obj = doc.getObject("FEM_PDBeam_Variables")
+                if var_obj is None:
+                    var_obj = doc.addObject("App::Variables", "FEM_PDBeam_Variables")
+                if var_obj:
+                    var_name = "FEM_PDBeam_Variables"
+            except Exception:
+                var_obj = None
+        if var_obj is None:
+            var_obj = doc.getObject("FEM_PDBeam_VarSet")
+            if var_obj is None:
+                var_obj = doc.addObject("App::VarSet", "FEM_PDBeam_VarSet")
+            if var_obj:
+                var_name = "FEM_PDBeam_VarSet"
+    except Exception:
+        var_obj = None
+        var_name = None
+    if var_obj and hasattr(var_obj, "addProperty") and var_name:
+        try:
+            if not hasattr(var_obj, "FilletRadius"):
+                var_obj.addProperty("App::PropertyFloat", "FilletRadius", "Beam",
+                                    "Fillet radius (mm) of the long top edge fillet. Edit here; the fillet follows.")
+                var_obj.FilletRadius = 100.0
+            elif getattr(var_obj, "FilletRadius", 0) <= 0:
+                var_obj.FilletRadius = 100.0
+            var_obj.Label = "PD beam variables"
+            doc.recompute()
+            if fillet_obj and hasattr(fillet_obj, "setExpression"):
+                for rad_prop in ("Radius", "FilletRadius"):
+                    if hasattr(fillet_obj, rad_prop):
+                        try:
+                            fillet_obj.setExpression(rad_prop, "%s.FilletRadius" % var_name)
+                        except Exception:
+                            pass
+                        break
+                doc.recompute()
+        except Exception as e:
+            log("FEM PartDesign beam example: variables object not wired (%s)." % e)
+
+    # --- Readme with the expected behaviour and face-numbering table ---
+    try:
+        td = doc.getObject("FEM_PDBeam_Readme")
+        if td is None:
+            td = doc.addObject("App::TextDocument", "FEM_PDBeam_Readme")
+        if td is not None:
+            td.Label = "FEM PD beam – readme and expected values"
+            td.Text = """FEM Cantilever Beam (PartDesign Body) – how to use this example
+
+Geometry: PartDesign Body 'PD_Beam': sketch 8000 x 1000 mm on XY + pad 1000 mm.
+Mesh geometry is the BODY, so it always follows the body tip (pad or fillet).
+Fillet feature 'PD_Beam_Fillet' on the LONG top edge (full length, y=0 side);
+default radius 100 mm (edit 'FilletRadius' in 'PD beam variables').
+
+Face numbering of the body (verified on FreeCAD 1.1.4, r=100 mm):
+• Without fillet (fillet suppressed): force face (x=8000) = Face2, fixed face (x=0) = Face4
+• With fillet:                          force face (x=8000) = Face5, fixed face (x=0) = Face2
+
+The demonstration:
+1. The constraints start with DIRECT face references (see their 'References' property):
+   fixed -> Face4, force -> Face2 (valid for the plain pad).
+2. Set 'PD_Beam_Fillet'.Suppressed = False in the Data tab and recompute.
+   The face numbering changes. The direct reference (Body, 'Face2') no longer names
+   the force face: FreeCAD 1.1 invalidates it (shown as '?Face2' and highlighted in
+   the tree), and on FreeCAD 1.0 it may silently point to another face such as the
+   fixed end. In both cases ConstraintForce no longer acts on the intended surface.
+3. Press 'Update all sets and links'. The SelectionSets (coordinates mode, MainObject =
+   Body) reevaluate and the SelectionSetLinks re-apply the intended references
+   (fixed face at x=0, force face at x=8000, and the force direction edge:
+   the vertical edge at the free end; its link uses TargetProperty = 'Direction').
+4. Check the constraints' References and Direction, then mesh and solve.
+
+Expected max deflection (mesh size 200 mm, CalculiX-Steel):
+• Without fillet: ~%.1f mm
+• With fillet (r=100 mm): slightly above the value without fillet (removed material
+  at the top edge); compare both runs.
+
+Warning: without step 3 the constraint references stay stale (invalid or wrong):
+the analysis then fails or produces wrong results without an obvious error message.
+""" % (FEM_CANTILEVER_REF_NO_HOLE_MM,)
+    except Exception:
+        pass
+
+    # --- Group the SelectionSets, links, variables, and readme into one tree group ---
+    # The PartDesign Body stays at document top level NEXT TO the FEM analysis
+    # (same tree layout as when the standalone scripts in src/tools/ are run).
+    beam_group_names = ["PD_Beam_FixedFace", "PD_Beam_ForceFace", "PD_Beam_Solid",
+                        "PD_Beam_ForceDirection",
+                        "FEM_PDBeam_Link_Material", "FEM_PDBeam_Link_Fixed", "FEM_PDBeam_Link_Force",
+                        "FEM_PDBeam_Link_ForceDirection"]
+    if doc.getObject("FEM_PDBeam_Readme"):
+        beam_group_names.append("FEM_PDBeam_Readme")
+    for vname in ("FEM_PDBeam_Variables", "FEM_PDBeam_VarSet"):
+        if doc.getObject(vname):
+            beam_group_names.append(vname)
+            break
+    _add_objects_to_group(doc, "FEM_PDBeam_Group", beam_group_names, label="FEM Cantilever (PartDesign)")
+
+    doc.recompute()
+    try:
+        if FreeCADGui.ActiveDocument and FreeCADGui.ActiveDocument.ActiveView:
+            FreeCADGui.ActiveDocument.ActiveView.viewIsometric()
+            FreeCADGui.ActiveDocument.ActiveView.fitAll()
+    except Exception:
+        pass
+    # Save document (output directory, e.g. set by run_with_gui.sh --results)
+    try:
+        import os
+        base = os.path.abspath(
+            os.environ.get(
+                "SELECTIONSET_OUTPUT_DIR",
+                os.path.dirname(os.path.abspath(__file__)),
+            )
+        )
+        if not os.path.isdir(base):
+            os.makedirs(base)
+        save_path = os.path.join(base, "FEM_PDBeam_with_SelectionSetLinks.FCStd")
+        doc.saveAs(save_path)
+        log("FEM PartDesign beam example: saved as %s" % save_path)
+    except Exception as e:
+        log("FEM PartDesign beam example: could not save file (%s)." % e)
+    log("FEM PartDesign beam example: done. Body + SelectionSets, SelectionSetLinks, direct and "
+        "link-driven references created." + (" (fillet active)" if fillet else " (fillet suppressed)"))
+    return doc
+
+
 def run_selectionset_tests():
     report = FreeCADGui.getMainWindow().findChild(QtWidgets.QTextEdit, "Report view")
     _log_lines = []  # capture for results file
@@ -2071,7 +2615,7 @@ def run_selectionset_tests():
             "BooleanFragments_CylTwoHalves.Face6",
             "BooleanFragments_CylTwoHalves.Face7",
             "BooleanFragments_CylTwoHalves.Face8", # manually approved
-            "BooleanFragments_CylTwoHalves.Face9", # manually approved            
+            "BooleanFragments_CylTwoHalves.Face9", # manually approved
         ]
         n_tests += 1
         log(f"Test 9 (faces intersection with Body003): {len(result9)} face(s) selected: {result9}")
@@ -2503,7 +3047,7 @@ def add_tests_pulldown_to_toolbar():
         btn.setIcon(icon)
     btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
     btn.setText("Tests")
-    btn.setToolTip("SelectionSet tests: Run Test 1, Build test geometry, Run Test 3, Run all tests, FEM beam example.")
+    btn.setToolTip("SelectionSet tests: Run Test 1, Build test geometry, Run Test 3, Run all tests, FEM beam example, FEM beam example (PartDesign body).")
     btn.setPopupMode(QtWidgets.QToolButton.InstantPopup)
     menu = QtWidgets.QMenu(btn)
     a1 = menu.addAction("Run Test 1 (two cubes, one SelectionSet)")
@@ -2517,6 +3061,8 @@ def add_tests_pulldown_to_toolbar():
     menu.addSeparator()
     a5 = menu.addAction("FEM beam example")
     a5.triggered.connect(lambda: run_fem_cantilever_beam_example(cylinder_cut=False))
+    a6 = menu.addAction("FEM beam example (PartDesign body)")
+    a6.triggered.connect(lambda: run_fem_partdesign_beam_example(fillet=False))
     btn.setMenu(menu)
     toolbar.addWidget(btn)
     print("Tests pulldown added to 'Selection_tools' toolbar.")

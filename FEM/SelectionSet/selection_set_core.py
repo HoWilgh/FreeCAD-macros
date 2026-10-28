@@ -8,7 +8,7 @@ import os
 _MACRO_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Macro version: used when loading (printed in Report view) and in test runner to confirm the loaded code version.
-__version__ = "1.0.1"
+__version__ = "1.1.0"
 
 
 def _macro_icons_dir():
@@ -628,15 +628,15 @@ class SelectionSet:
             "App::PropertyEnumeration",
             "Mode",
             "Selection",
-            "Selection mode: faces or solids",
+            "Selection mode: faces, solids, or edges",
         )
-        obj.Mode = ["faces", "solids"]
+        obj.Mode = ["faces", "solids", "edges"]
         obj.Mode = "faces"
         obj.addProperty(
             "App::PropertyEnumeration",
             "VolumeMode",
             "Selection",
-            "Volume/coordinates filter: fully_inside, intersection, or coordinates (point-in-face/solid)",
+            "Volume/coordinates filter: fully_inside, intersection, or coordinates (point-in-face/solid/edge)",
         )
         obj.VolumeMode = ["fully_inside", "intersection", "coordinates"]
         obj.VolumeMode = "fully_inside"
@@ -713,9 +713,9 @@ class SelectionSet:
                 "App::PropertyEnumeration",
                 "Mode",
                 "Selection",
-                "Selection mode: faces or solids",
+                "Selection mode: faces, solids, or edges",
             )
-            obj.Mode = ["faces", "solids"]
+            obj.Mode = ["faces", "solids", "edges"]
             obj.Mode = "faces"
         if not hasattr(obj, "VolumeMode"):
             obj.addProperty(
@@ -1220,6 +1220,47 @@ def get_solids_by_point(obj, point, tol=1e-6):
     return solids
 
 
+def get_edges_by_point(obj, point, tol=1e-6):
+    """
+    Return list of edge element names (e.g. Obj.Edge5) of obj that contain the given point.
+    point: FreeCAD.Vector. Uses distToShape(edge, vertex) <= tol to decide.
+    Typical use: Mode 'edges' + VolumeMode 'coordinates' to select e.g. the direction
+    edge of a Fem::ConstraintForce.
+    """
+    point = FreeCAD.Vector(point.x, point.y, point.z)
+    edges = []
+    shape = getattr(obj, "Shape", None)
+    if not shape or not getattr(shape, "Edges", None):
+        return edges
+    for i, edge in enumerate(shape.Edges):
+        try:
+            if edge.distToShape(Part.Vertex(point))[0] <= tol:
+                edges.append(f"{obj.Name}.Edge{i + 1}")
+        except Exception:
+            pass
+    return edges
+
+
+def _edge_fully_inside_shape(edge, shape, tol=1e-7):
+    """Return True if the whole edge lies inside the selection shape (by common length)."""
+    try:
+        common = shape.common(edge)
+        return (getattr(common, "Length", 0.0) or 0.0) >= (edge.Length - tol)
+    except Exception:
+        return False
+
+
+def _edge_intersects_shape(edge, shape, tol=1e-7):
+    """Return True if the edge has any overlap with (or touches) the selection shape."""
+    try:
+        common = shape.common(edge)
+        if (getattr(common, "Length", 0.0) or 0.0) > tol:
+            return True
+        return edge.distToShape(shape)[0] <= tol
+    except Exception:
+        return False
+
+
 def _normalize_link_sub(item):
     """Get (object, subname_string) from a PropertyLinkSubList item. SubName may be tuple e.g. ('Solid3',)."""
     if (
@@ -1488,8 +1529,8 @@ def createSelectionSetFromCurrent(
     if selection_set_name is None:
         selection_set_name = "SelectionSet_%d" % len(FreeCAD.ActiveDocument.Objects)
 
-    if force_mode not in (None, "faces", "solids"):
-        raise ValueError("force_mode must be 'faces', 'solids', or None")
+    if force_mode not in (None, "faces", "solids", "edges"):
+        raise ValueError("force_mode must be 'faces', 'solids', 'edges', or None")
     if volume_mode is not None and volume_mode not in (
         "fully_inside",
         "intersection",
@@ -1916,6 +1957,8 @@ def recomputeSelectionSetFromShapes(set_obj):
                 tol=1e-6,
                 solid_filter_list=solid_filter_list if solid_filter_list else None,
             )
+        elif mode == "edges":
+            elements = get_edges_by_point(main_obj, point, tol=1e-6)
         else:
             elements = get_solids_by_point(main_obj, point, tol=1e-6)
         set_obj.ElementList = elements
@@ -1940,6 +1983,14 @@ def recomputeSelectionSetFromShapes(set_obj):
             volume_mode=volume_mode,
             solid_filter_list=solid_filter_list if solid_filter_list else None,
         )
+    elif mode == "edges":
+        for i, edge in enumerate(main_obj.Shape.Edges):
+            if volume_mode == "intersection":
+                include = _edge_intersects_shape(edge, selection_shape.Shape)
+            else:
+                include = _edge_fully_inside_shape(edge, selection_shape.Shape)
+            if include:
+                elements.append(f"{main_obj.Name}.Edge{i + 1}")
     else:
         solid_volume_mode = (
             volume_mode
@@ -2424,6 +2475,7 @@ class SelectionSetLink:
     # Properties that, when changed, should re-apply the combined refs to the target.
     _INPUT_PROPS = (
         "TargetObjects",
+        "TargetProperty",
         "AddSelectionSets",
         "AddShapes",
         "SubtractSelectionSets",
@@ -2478,6 +2530,15 @@ class SelectionSetLink:
             "If true, insert references one-by-one (for constraints that only accept one face at a time)",
         )
         obj.UseOneByOneWorkaround = True
+        obj.addProperty(
+            "App::PropertyEnumeration",
+            "TargetProperty",
+            "SelectionSet link",
+            "Target property that receives the combined refs: 'References' (default, e.g. constraints/material) "
+            "or 'Direction' (e.g. the direction edge of Fem::ConstraintForce; the first edge ref is used)",
+        )
+        obj.TargetProperty = ["References", "Direction"]
+        obj.TargetProperty = "References"
         obj.addProperty(
             "App::PropertyString",
             "RefSummary",
@@ -2537,6 +2598,16 @@ class SelectionSetLink:
                 "SelectionSet link",
                 "If true, add references one-by-one (for constraints that only accept one face at a time)",
             )
+        if not hasattr(obj, "TargetProperty"):
+            obj.addProperty(
+                "App::PropertyEnumeration",
+                "TargetProperty",
+                "SelectionSet link",
+                "Target property that receives the combined refs: 'References' (default, e.g. constraints/material) "
+                "or 'Direction' (e.g. the direction edge of Fem::ConstraintForce; the first edge ref is used)",
+            )
+            obj.TargetProperty = ["References", "Direction"]
+            obj.TargetProperty = "References"
         if not hasattr(obj, "RefSummary"):
             obj.addProperty(
                 "App::PropertyString",
@@ -2623,21 +2694,40 @@ class SelectionSetLink:
         return result
 
     def get_targets(self, obj):
-        """Return list of target objects (with References) from TargetObjects, deduplicated."""
+        """Return list of target objects from TargetObjects, deduplicated.
+        Filtered by the link's TargetProperty: targets need a 'References' property
+        (default) or a 'Direction' property (e.g. Fem::ConstraintForce)."""
+        target_prop = getattr(obj, "TargetProperty", "References") or "References"
         raw = getattr(obj, "TargetObjects", None) or []
         seen = set()
         out = []
         for t in raw:
-            if t is None or id(t) in seen or not hasattr(t, "References"):
+            if t is None or id(t) in seen or not hasattr(t, target_prop):
                 continue
             seen.add(id(t))
             out.append(t)
         return out
 
+    def _direction_ref_equal(self, target, ref):
+        """Return True if the target's current Direction already equals (obj, sub) ref."""
+        cur = getattr(target, "Direction", None)
+        if not cur:
+            return False
+        cur_obj, cur_subs = cur[0], cur[1]
+        if isinstance(cur_subs, (list, tuple)):
+            cur_sub = cur_subs[0] if cur_subs else ""
+        else:
+            cur_sub = cur_subs
+        return cur_obj.Name == ref[0].Name and cur_sub == ref[1]
+
     def apply_to_target(self, obj):
         """
         Apply combined refs to each target in TargetObjects. Returns True if applied to at least one.
-        When combined refs are 0, each target's References are cleared (set to []).
+        TargetProperty 'References' (default): sets each target's References; when combined
+        refs are 0, each target's References are cleared (set to []).
+        TargetProperty 'Direction': sets each target's Direction from the FIRST combined ref
+        (e.g. the direction edge of Fem::ConstraintForce); when refs are empty, the Direction
+        is left unchanged (clearing a direction reference is not supported).
         Skips a target when it already has the same refs, to avoid repeated "still touched after recompute".
         """
         targets = self.get_targets(obj)
@@ -2645,6 +2735,25 @@ class SelectionSetLink:
             return False
         refs = self.get_combined_refs(obj)
         doc = getattr(obj, "Document", None) or FreeCAD.ActiveDocument
+        if (getattr(obj, "TargetProperty", "References") or "References") == "Direction":
+            if not refs:
+                return False
+            applied = 0
+            for target in targets:
+                ref = refs[0]
+                if self._direction_ref_equal(target, ref):
+                    applied += 1
+                    continue
+                try:
+                    target.Direction = (ref[0], [ref[1]])
+                    target.touch()
+                    applied += 1
+                except Exception as e:
+                    FreeCAD.Console.PrintWarning(
+                        "SelectionSetLink: could not set Direction on '%s': %s\n"
+                        % (target.Name, e)
+                    )
+            return applied > 0
         use_one_by_one = getattr(obj, "UseOneByOneWorkaround", True)
         applied = 0
         for target in targets:
